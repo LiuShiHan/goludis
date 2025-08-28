@@ -48,6 +48,7 @@ func (b *bucket[K, V]) scheduleTimerLocked() {
 	b.resetTimer(next)
 }
 
+// dd
 func (b *bucket[K, V]) resetTimer(d time.Duration) {
 	b.timerMu.Lock()
 	b.timerMu.Unlock()
