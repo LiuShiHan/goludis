@@ -1,4 +1,37 @@
-package cache
+User: 怎么使用redis的消息队列
+User: celery 使用了 redis的哪种消息队列方法
+Kimi: Celery 使用 Redis 作为消息队列时，**默认使用的是 Redis 的 List 结构模拟的消息队列**，具体实现方式是：
+
+- **生产者（Producer）**：使用 `LPUSH` 将任务序列化后推入 Redis 的 List 中。
+- **消费者（Worker）**：使用 `BRPOP` 阻塞式地从 List 中取出任务进行处理。
+
+---
+
+### ✅ 具体细节
+- Celery 默认不会使用 Redis 的 **Pub/Sub**（因为它不支持持久化，消息易丢失）。
+- Celery 也不会默认使用 **Redis Stream**（虽然 Stream 功能更强，但 Celery 为了兼容旧版本 Redis，仍以 List 为主）。
+- 你可以通过配置 `redis://` 或 `rediss://` 的 URL 来指定 Redis 作为 broker，Celery 会自动选择 List 结构作为底层实现。
+
+---
+
+### ✅ 示例配置（使用 List 结构）
+```python
+from celery import Celery
+
+app = Celery('tasks', broker='redis://localhost:6379/0')
+
+@app.task
+def add(x, y):
+    return x + y
+```
+
+---
+
+### ✅ 总结一句话
+> Celery 使用 Redis 作为消息队列时，**底层实现是基于 Redis 的 List 结构（LPUSH + BRPOP）**，而不是 Pub/Sub 或 Stream。
+
+如需更高可靠性（如 Stream 的消费组机制），Celery 目前**不原生支持**，需要额外扩展或改用 RabbitMQ。
+User: package cache
 
 import (
 	"errors"
@@ -229,4 +262,118 @@ func (db *BucketCache[K, V]) Close() error {
 		bucket.stopTime()
 	}
 	return nil
+}   这是我写的一个KV方法，我现在想实现一个 List 结构（LPUSH + BRPOP）的功能，请问怎么修改，但不要影响到原有的功能
+Kimi: 目标
+• 在 **不影响原来 KV 能力** 的前提下，给 `BucketCache` 增加 **List（LPUSH / BRPOP）** 功能。
+• 与原有 `keys / exps` 两条 `btree` 互不干扰；过期、关闭等逻辑只作用于 KV 部分。
+• 每条 List 仍按 key 分片（与 KV 同一套 shard 规则），保证并发安全。
+
+---
+
+### ✅ 1. 数据结构追加
+
+```go
+// 在 bucket 里追加一条 list 存储
+type bucket[K KEY, V any] struct {
+    ...
+    lists map[K]*listNode[V]   // key -> List 头指针
+    listMu sync.RWMutex        // 保护 lists
 }
+
+type listNode[V any] struct {
+    val  V
+    next *listNode[V]
+}
+```
+
+---
+
+### ✅ 2. 初始化补一行
+
+```go
+// NewCache 里对每个 bucket 补充
+for i := 0; i < shardNum; i++ {
+    buctetCache.buckets[i] = &bucket[K, V]{
+        ...
+        lists: make(map[K]*listNode[V]),
+    }
+}
+```
+
+---
+
+### ✅ 3. List 对外 API（线程安全）
+
+```go
+// --------------  API  --------------
+// 追加到队首（LPUSH 语义）
+func (db *BucketCache[K, V]) LPush(key K, val V) {
+    idx := db.hasher.Hash(key) % db.shardN
+    b := db.buckets[idx]
+    b.listMu.Lock()
+    head := b.lists[key]
+    b.lists[key] = &listNode[V]{val: val, next: head}
+    b.listMu.Unlock()
+}
+
+// 阻塞式弹出（BRPOP 语义）
+// 当列表为空时阻塞直到有元素；timeout<=0 表示无限等待
+func (db *BucketCache[K, V]) BRPop(key K, timeout time.Duration) (V, error) {
+    idx := db.hasher.Hash(key) % db.shardN
+    b := db.buckets[idx]
+
+    deadline := time.Now().Add(timeout)
+    for {
+        b.listMu.Lock()
+        head := b.lists[key]
+        if head != nil {
+            b.lists[key] = head.next
+            b.listMu.Unlock()
+            return head.val, nil
+        }
+        b.listMu.Unlock()
+
+        // 为空，等待或超时
+        if timeout > 0 && time.Now().After(deadline) {
+            var zero V
+            return zero, errors.New("timeout")
+        }
+        time.Sleep(10 * time.Millisecond) // 简单忙等，可换成 sync.Cond 优化
+    }
+}
+```
+
+---
+
+### ✅ 4. Close 里无需额外处理
+`lists` 里的节点全是普通 Go 对象，随 bucket 一起 GC 即可。
+
+---
+
+### ✅ 5. 使用示例（不破坏 KV）
+
+```go
+c, _ := NewCache[string, int](4)
+go func() {
+    for {
+        v, _ := c.BRPop("jobs", 0)
+        fmt.Println("worker got", v)
+    }
+}()
+
+c.LPush("jobs", 1)
+c.LPush("jobs", 2)
+
+// KV 功能完全不变
+c.Set("foo", "bar", nil)
+fmt.Println(c.Get("foo"))
+```
+
+---
+
+### ✅ 6. 额外可选增强
+• 把 `time.Sleep` 换成 `sync.Cond` 以减少 CPU 空转。
+• 增加 `LLen / LRange` 之类接口。
+• 把 `listNode` 换成 `container/list` 节省代码量。
+
+至此，**LPUSH / BRPOP 已独立加入**，原有 KV 逻辑（过期、Get/Set/Delete）**零改动**。
