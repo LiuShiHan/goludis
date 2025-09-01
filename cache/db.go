@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"container/list"
 	"errors"
 	"github.com/tidwall/assert"
 	"github.com/tidwall/btree"
@@ -26,14 +27,35 @@ type bucket[K KEY, V any] struct {
 	exps     *btree.BTreeG[dbItem[K, V]]
 	db       *BucketCache[K, V]
 	timer    *time.Timer
-	listMap  map[K]*listNode[V]
+	listMap  map[K]*LIRList[V]
 	listChan map[K]*listBroadcast
 }
 
-type listNode[V any] struct {
-	val  V
-	next *listNode[V]
-	len  int
+//type listNode[V any] struct {
+//	val  V
+//	next *listNode[V]
+//	len  int
+//}
+
+type LIRList[V any] struct {
+	l *list.List
+}
+
+func NewLIRList[V any]() *LIRList[V] {
+	return &LIRList[V]{l: list.New()}
+}
+
+func (l *LIRList[V]) LPush(val V) {
+	l.l.PushFront(val)
+}
+
+func (l *LIRList[V]) RPop() (V, error) {
+	var zero V
+	back := l.l.Back()
+	if back == nil {
+		return zero, errors.New("list is empty")
+	}
+	return l.l.Remove(back).(V), nil
 }
 
 type listBroadcast struct {
@@ -190,56 +212,78 @@ func (db *BucketCache[K, V]) Get(key K) (val V, err error) {
 func (db *BucketCache[K, V]) LPush(key K, val V) {
 	idx := db.hasher.Hash(key) % db.shardN
 	bucket := db.buckets[idx]
-	bucket.mu.Lock()
-	defer bucket.mu.Unlock()
-	head := bucket.listMap[key]
-	bucket.listMap[key] = &listNode[V]{val: val, next: head}
-	if _, ok := bucket.listChan[key]; ok {
-		bucket.listChan[key].pub(1)
-	} else {
-		bucket.listChan[key] = &listBroadcast{}
-	}
+	bucket.lPush(key, val)
 }
 
 func (db *BucketCache[K, V]) BRPop(key K, timeout time.Duration) (val V, err error) {
 	idx := db.hasher.Hash(key) % db.shardN
 	bucket := db.buckets[idx]
-	bucket.mu.Lock()
-	head := bucket.listMap[key]
-	if head != nil {
-		bucket.listMap[key] = head.next
-		if head.next == nil {
-			delete(bucket.listMap, key)
-		}
-		bucket.mu.Unlock()
-		return head.val, nil
-	}
-	var zero V
-	bc, ok := bucket.listChan[key]
-	if !ok {
-		bc = &listBroadcast{subs: map[chan int]struct{}{}}
-		bucket.listChan[key] = bc
-	}
-	ch := bc.sub()
-	bucket.mu.Unlock()
+	return bucket.brPop(key, timeout)
+}
 
+func (db *BucketCache[K, V]) RPop(key K) (val V, err error) {
+	idx := db.hasher.Hash(key) % db.shardN
+	bucket := db.buckets[idx]
+	return bucket.rPop(key)
+}
+
+func (sharDb *bucket[K, V]) lPush(key K, val V) {
+	sharDb.mu.Lock()
+	defer sharDb.mu.Unlock()
+	if l, ok := sharDb.listMap[key]; ok {
+		l.LPush(val)
+	} else {
+		sharDb.listMap[key] = NewLIRList[V]()
+		sharDb.listMap[key].LPush(val)
+	}
+
+	if _, ok := sharDb.listChan[key]; ok {
+		sharDb.listChan[key].pub(1)
+	} else {
+		sharDb.listChan[key] = &listBroadcast{}
+	}
+
+}
+
+func (sharDB *bucket[K, V]) rPop(key K) (val V, err error) {
+	sharDB.mu.Lock()
+	defer sharDB.mu.Unlock()
+	var zero V
+	if l, ok := sharDB.listMap[key]; ok {
+		val, err := l.RPop()
+		if err != nil {
+			return zero, err
+		}
+		return val, nil
+	}
+	return zero, errors.New("key not found")
+}
+
+func (sharDB *bucket[K, V]) brPop(key K, timeout time.Duration) (val V, err error) {
+	val, err = sharDB.rPop(key)
+
+	if err == nil {
+		return val, nil
+	}
+
+	sharDB.mu.Lock()
+	if _, ok := sharDB.listChan[key]; !ok {
+
+		bc := &listBroadcast{subs: map[chan int]struct{}{}}
+		sharDB.listChan[key] = bc
+	}
+	bc := sharDB.listChan[key]
+	ch := bc.sub()
+	sharDB.mu.Unlock()
+	var zero V
 	for {
 
 		select {
 		case <-ch:
-			bucket.mu.Lock()
-			head = bucket.listMap[key]
-			if head != nil {
-				bucket.listMap[key] = head.next
-				if head.next == nil {
-					delete(bucket.listMap, key)
-				}
-				bucket.mu.Unlock()
-
-				bc.unsub(ch)
-				return head.val, nil
+			val, err := sharDB.rPop(key)
+			if err == nil {
+				return val, nil
 			}
-			bucket.mu.Unlock()
 
 		case <-time.After(timeout):
 			bc.unsub(ch)
@@ -249,7 +293,6 @@ func (db *BucketCache[K, V]) BRPop(key K, timeout time.Duration) (val V, err err
 		}
 
 	}
-
 }
 
 func (sharDb *bucket[K, V]) set(item dbItem[K, V]) error {
@@ -321,7 +364,7 @@ func NewCache[K KEY, V any](shardBits int) (*BucketCache[K, V], error) {
 			keys:     btree.NewBTreeG(lessFunc[K, V]),
 			exps:     btree.NewBTreeG(lessTimeFunc[K, V]),
 			db:       buctetCache,
-			listMap:  make(map[K]*listNode[V]),
+			listMap:  make(map[K]*LIRList[V]),
 			listChan: make(map[K]*listBroadcast),
 		}
 	}
