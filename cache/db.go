@@ -268,7 +268,6 @@ func (sharDB *bucket[K, V]) brPop(key K, timeout time.Duration) (val V, err erro
 
 	sharDB.mu.Lock()
 	if _, ok := sharDB.listChan[key]; !ok {
-
 		bc := &listBroadcast{subs: map[chan int]struct{}{}}
 		sharDB.listChan[key] = bc
 	}

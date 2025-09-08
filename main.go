@@ -13,10 +13,16 @@ import (
 var db *cache.BucketCache[string, string]
 
 func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
+	//for _, arg := range cmd.Args {
+	//	fmt.Println("handleRedisCommand", string(arg))
+	//}
+	//fmt.Println("handleRedisCommand", cmd.Args)
 	switch strings.ToUpper(string(cmd.Args[0])) {
 	case "SET":
-		if len(cmd.Args) != 3 || len(cmd.Args) != 5 {
+
+		if len(cmd.Args) != 3 && len(cmd.Args) != 5 {
 			conn.WriteError("ERR wrong number of arguments for '" + string(cmd.Args[0]) + "' command")
+			return
 		}
 		key := string(cmd.Args[1])
 		value := string(cmd.Args[2])
@@ -40,6 +46,7 @@ func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
 
 	case "GET":
 		if len(cmd.Args) != 2 {
+			fmt.Println("GET")
 			conn.WriteError("ERR wrong number of arguments for '" + string(cmd.Args[0]) + "' command")
 			return
 		}
@@ -52,6 +59,7 @@ func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
 		}
 	case "LPUSH":
 		if len(cmd.Args) < 3 {
+			fmt.Println("LPUSH")
 			conn.WriteError("ERR wrong number of arguments for '" + string(cmd.Args[0]) + "' command")
 			return
 		}
@@ -62,6 +70,7 @@ func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
 		conn.WriteInt(len(cmd.Args) - 2)
 	case "BRPOP":
 		if len(cmd.Args) != 3 {
+			fmt.Println("BRPOP")
 			conn.WriteError("ERR wrong number of arguments for '" + string(cmd.Args[0]) + "' command")
 			return
 		}
