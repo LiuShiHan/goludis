@@ -9,18 +9,29 @@ import (
 	"time"
 )
 
+const (
+	opEOF      = 0xFF
+	opSelectDB = 0xFE
+	opExpireMS = 0xFC
+	opString   = 0x00
+)
+
 type KEY interface {
 	~string | ~int
 }
 
-type BucketCache[K KEY, V any] struct {
+type VALUE interface {
+	~string
+}
+
+type BucketCache[K KEY, V VALUE] struct {
 	shardN  uint64
 	buckets []*bucket[K, V]
 	hasher  Hasher[K]
 	flushes int
 }
 
-type bucket[K KEY, V any] struct {
+type bucket[K KEY, V VALUE] struct {
 	mu       sync.RWMutex
 	timerMu  sync.Mutex
 	keys     *btree.BTreeG[dbItem[K, V]]
@@ -31,17 +42,17 @@ type bucket[K KEY, V any] struct {
 	listChan map[K]*listBroadcast
 }
 
-//type listNode[V any] struct {
+//type listNode[V VALUE] struct {
 //	val  V
 //	next *listNode[V]
 //	len  int
 //}
 
-type LIRList[V any] struct {
+type LIRList[V VALUE] struct {
 	l *list.List
 }
 
-func NewLIRList[V any]() *LIRList[V] {
+func NewLIRList[V VALUE]() *LIRList[V] {
 	return &LIRList[V]{l: list.New()}
 }
 
@@ -166,7 +177,7 @@ type SetOptions struct {
 	TTL     time.Duration
 }
 
-type dbItem[K KEY, V any] struct {
+type dbItem[K KEY, V VALUE] struct {
 	key     K
 	val     V
 	opts    *dbItemOpts
@@ -337,16 +348,16 @@ func defaultHasher[K KEY]() Hasher[K] {
 	}
 }
 
-func lessFunc[K KEY, V any](a, b dbItem[K, V]) bool {
+func lessFunc[K KEY, V VALUE](a, b dbItem[K, V]) bool {
 	return a.key < b.key
 }
 
-func lessTimeFunc[K KEY, V any](a, b dbItem[K, V]) bool {
+func lessTimeFunc[K KEY, V VALUE](a, b dbItem[K, V]) bool {
 	assert.Assert(a.opts != nil && b.opts != nil && a.opts.expires && b.opts.expires)
 	return a.opts.exat.Before(b.opts.exat)
 }
 
-func NewCache[K KEY, V any](shardBits int) (*BucketCache[K, V], error) {
+func NewCache[K KEY, V VALUE](shardBits int) (*BucketCache[K, V], error) {
 	if shardBits < 0 || shardBits > 8 {
 		return nil, errors.New("shardBits should in [0,8]")
 	}
