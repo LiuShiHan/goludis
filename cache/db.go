@@ -215,6 +215,13 @@ func (db *BucketCache[K, V]) LPush(key K, val V) {
 	bucket.lPush(key, val)
 }
 
+func (db *BucketCache[K, V]) LLen(key K) int {
+	idx := db.hasher.Hash(key) % db.shardN
+	bucket := db.buckets[idx]
+	return bucket.lLen(key)
+
+}
+
 func (db *BucketCache[K, V]) BRPop(key K, timeout time.Duration) (val V, err error) {
 	idx := db.hasher.Hash(key) % db.shardN
 	bucket := db.buckets[idx]
@@ -257,6 +264,17 @@ func (sharDB *bucket[K, V]) rPop(key K) (val V, err error) {
 		return val, nil
 	}
 	return zero, errors.New("key not found")
+}
+
+func (b *bucket[K, V]) lLen(key K) int {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	l, ok := b.listMap[key]
+	if !ok {
+		return 0
+	}
+	return l.l.Len()
 }
 
 func (sharDB *bucket[K, V]) brPop(key K, timeout time.Duration) (val V, err error) {

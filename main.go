@@ -88,6 +88,57 @@ func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
 			conn.WriteBulkString(key)
 			conn.WriteBulkString(val)
 		}
+	case "EXISTS":
+		if len(cmd.Args) != 2 {
+			conn.WriteError("ERR wrong number of arguments for '" + string(cmd.Args[0]) + "' command")
+			return
+		}
+		key := string(cmd.Args[1])
+		_, err := db.Get(key)
+		if err != nil {
+			conn.WriteInt(0)
+		} else {
+			conn.WriteInt(1)
+		}
+
+	case "DEL":
+		if len(cmd.Args) < 2 {
+			conn.WriteError("ERR wrong number of arguments for '" + string(cmd.Args[0]) + "' command")
+			return
+		}
+		count := 0
+		for i := 1; i < len(cmd.Args); i++ {
+			key := string(cmd.Args[i])
+			if _, err := db.Get(key); err == nil {
+				err := db.Delete(key)
+				if err != nil {
+					return
+				}
+				count++
+			}
+		}
+		conn.WriteInt(count)
+	case "RPOP":
+		if len(cmd.Args) != 2 {
+			conn.WriteError("ERR wrong number of arguments for '" + string(cmd.Args[0]) + "' command")
+			return
+		}
+		key := string(cmd.Args[1])
+		val, err := db.RPop(key) // 你需要实现 LPop
+		if err != nil {
+			conn.WriteNull()
+		} else {
+			conn.WriteBulkString(val)
+		}
+
+	case "LLEN":
+		if len(cmd.Args) != 2 {
+			conn.WriteError("ERR wrong number of arguments for '" + string(cmd.Args[0]) + "' command")
+			return
+		}
+		key := string(cmd.Args[1])
+		length := db.LLen(key) // 你需要实现 LLen
+		conn.WriteInt(length)
 	default:
 		conn.WriteError(fmt.Sprintf("ERR unknown command '%s'", string(cmd.Args[0])))
 	}
