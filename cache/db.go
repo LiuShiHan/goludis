@@ -9,13 +9,6 @@ import (
 	"time"
 )
 
-const (
-	opEOF      = 0xFF
-	opSelectDB = 0xFE
-	opExpireMS = 0xFC
-	opString   = 0x00
-)
-
 type KEY interface {
 	~string | ~int
 }
