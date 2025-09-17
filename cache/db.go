@@ -33,13 +33,25 @@ type bucket[K KEY, V VALUE] struct {
 	timer    *time.Timer
 	listMap  map[K]*LIRList[V]
 	listChan map[K]*listBroadcast
+	zMaps    map[K]*zSetTable[K]
 }
 
-//type listNode[V VALUE] struct {
-//	val  V
-//	next *listNode[V]
-//	len  int
-//}
+type zSetItem[K KEY] struct {
+	score  float64
+	member K
+}
+
+func zSetLess[K KEY](a, b zSetItem[K]) bool {
+	if a.score != b.score {
+		return a.score < b.score
+	}
+	return a.member < b.member
+}
+
+type zSetTable[K KEY] struct {
+	idx  *btree.BTreeG[zSetItem[K]]
+	dict map[K]*zSetItem[K]
+}
 
 type LIRList[V VALUE] struct {
 	l *list.List
@@ -387,6 +399,7 @@ func NewCache[K KEY, V VALUE](shardBits int) (*BucketCache[K, V], error) {
 			db:       buctetCache,
 			listMap:  make(map[K]*LIRList[V]),
 			listChan: make(map[K]*listBroadcast),
+			zMaps:    make(map[K]*zSetTable[K]),
 		}
 	}
 
