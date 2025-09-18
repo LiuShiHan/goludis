@@ -65,12 +65,13 @@ type ZRangeByScoreOpts struct {
 func ParseZRangeByScoreArgs(args []string) (ZRangeByScoreOpts, error) {
 	opts := ZRangeByScoreOpts{Min: math.Inf(-1), Max: math.Inf(1)}
 	i := 0
+
 	if i < len(args) {
-		opts.Min, opts.MinEx = parseScore(args[i])
+		opts.Max, opts.MaxEx = parseScore(args[i])
 		i++
 	}
 	if i < len(args) {
-		opts.Max, opts.MaxEx = parseScore(args[i])
+		opts.Min, opts.MinEx = parseScore(args[i])
 		i++
 	}
 	for i < len(args) {
@@ -506,7 +507,7 @@ func adjustIndex(idx, n int) int {
 	return idx
 }
 
-func (sharDb *bucket[K, V]) zRange(key K, start, stop int, isReverse bool) []K {
+func (sharDb *bucket[K, V]) zRange(key K, start, stop int, isReverse bool) []interface{} {
 	sharDb.mu.RLock()
 	defer sharDb.mu.RUnlock()
 	zt, ok := sharDb.zMaps[key]
@@ -519,7 +520,7 @@ func (sharDb *bucket[K, V]) zRange(key K, start, stop int, isReverse bool) []K {
 	if start > stop {
 		return nil
 	}
-	out := make([]K, 0, stop-start+1)
+	out := make([]interface{}, 0, stop-start+1)
 	i := 0
 	iter := zt.idx.Scan
 	if isReverse {
@@ -529,6 +530,7 @@ func (sharDb *bucket[K, V]) zRange(key K, start, stop int, isReverse bool) []K {
 	iter(func(it zSetItem[K]) bool {
 		if i >= start && i <= stop {
 			out = append(out, it.member)
+			out = append(out, it.score)
 		}
 		i++
 		return i <= stop
@@ -576,9 +578,7 @@ func (sharDb *bucket[K, V]) zRangeByScoreOpts(key K, opts ZRangeByScoreOpts) []i
 			}
 		}
 		out = append(out, it.member)
-		if opts.WithScores {
-			out = append(out, it.score)
-		}
+		out = append(out, it.score)
 		n++
 		return true
 	})
@@ -630,12 +630,12 @@ func (db *BucketCache[K, V]) ZCard(key K) int {
 	return db.buckets[idx].zCard(key)
 }
 
-func (db *BucketCache[K, V]) ZRange(key K, start, stop int) []K {
+func (db *BucketCache[K, V]) ZRange(key K, start, stop int) []interface{} {
 	idx := db.hasher.Hash(key) % db.shardN
 	return db.buckets[idx].zRange(key, start, stop, false)
 }
 
-func (db *BucketCache[K, V]) ZRevRange(key K, start, stop int) []K {
+func (db *BucketCache[K, V]) ZRevRange(key K, start, stop int) []interface{} {
 	idx := db.hasher.Hash(key) % db.shardN
 	return db.buckets[idx].zRange(key, start, stop, true)
 }

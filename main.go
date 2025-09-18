@@ -12,13 +12,42 @@ import (
 
 var db *cache.BucketCache[string, string]
 
+const defaultDB = 0
+
+// 连接建立时把默认库挂上去
+func acceptHandler(conn redcon.Conn) bool {
+	conn.SetContext(defaultDB) // 初始 DB 0
+	return true
+}
+
+// 统一读当前库的小助手
+func currentDB(conn redcon.Conn) int {
+	if v := conn.Context(); v != nil {
+		return v.(int)
+	}
+	return defaultDB
+}
+
 func writeZSetReply(conn redcon.Conn, members []interface{}, withScores bool) {
 	if len(members) == 0 {
 		conn.WriteArray(0)
 		return
 	}
-	conn.WriteArray(len(members))
-	for _, v := range members {
+	if len(members)%2 != 0 {
+		conn.WriteError("ERR wrong number of arguments for  writeZSetReply")
+		conn.WriteArray(0)
+		return
+	}
+	if !withScores {
+		conn.WriteArray(len(members) / 2)
+	} else {
+		conn.WriteArray(len(members))
+	}
+
+	for index, v := range members {
+		if !withScores && index%2 != 0 {
+			continue
+		}
 		switch val := v.(type) {
 		case string:
 			conn.WriteBulkString(val)
@@ -27,12 +56,31 @@ func writeZSetReply(conn redcon.Conn, members []interface{}, withScores bool) {
 		default:
 			conn.WriteBulkString(fmt.Sprint(v))
 		}
+
 	}
 }
 
 func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
+	// 加上 识别 redis链接时候选择的DB
 
 	switch strings.ToUpper(string(cmd.Args[0])) {
+
+	case "SELECT":
+		if len(cmd.Args) != 2 {
+			conn.WriteError("ERR wrong number of arguments for 'select'")
+			return
+		}
+		idx, err := strconv.Atoi(string(cmd.Args[1]))
+		if err != nil || idx < 0 {
+			conn.WriteError("ERR invalid DB index")
+			return
+		}
+		// 真正切换
+		conn.SetContext(idx)
+		log.Printf("client switched to DB %d", idx)
+		conn.WriteString("OK")
+		return
+
 	case "SET":
 		if len(cmd.Args) != 3 && len(cmd.Args) != 5 {
 			conn.WriteError("ERR wrong number of arguments for '" + string(cmd.Args[0]) + "' command")
@@ -301,7 +349,7 @@ func main() {
 	log.Println("Starting Redis-compatible server on", addr)
 	err = redcon.ListenAndServe(addr,
 		handleRedisCommand,
-		func(conn redcon.Conn) bool { return true },
+		acceptHandler,
 		func(conn redcon.Conn, err error) { log.Println("closed:", err) },
 	)
 	if err != nil {
@@ -309,3 +357,23 @@ func main() {
 	}
 
 }
+
+// 127.0.0.1:6379> ZADD z 1 one 2 two 3 three 4 four
+//(integer) 4
+//127.0.0.1:6379> ZRANGEBYSCORE z (1 4 WITHSCORES LIMIT 0 2
+//1) "two"
+//2) "2"
+//3) "three"
+//4) "3"
+//127.0.0.1:6379> ZREVRANGEBYSCORE z -inf +inf LIMIT 1 2
+//1) "three"
+//2) "two"
+//127.0.0.1:6379> ZRANGE z 0 -1 WITHSCORES
+//1) "one"
+//2) "1"
+//3) "two"
+//4) "2"
+//5) "three"
+//6) "3"
+//7) "four"
+//8) "4"
