@@ -5,6 +5,9 @@ import (
 	"errors"
 	"github.com/tidwall/assert"
 	"github.com/tidwall/btree"
+	"math"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -48,6 +51,63 @@ func zSetLess[K KEY](a, b zSetItem[K]) bool {
 	return a.member < b.member
 }
 
+type ZRangeByScoreOpts struct {
+	Min, Max   float64
+	MinEx      bool
+	MaxEx      bool
+	WithScores bool
+	Limit      bool
+	Offset     int
+	Count      int
+	Reverse    bool
+}
+
+func ParseZRangeByScoreArgs(args []string) (ZRangeByScoreOpts, error) {
+	opts := ZRangeByScoreOpts{Min: math.Inf(-1), Max: math.Inf(1)}
+	i := 0
+	if i < len(args) {
+		opts.Min, opts.MinEx = parseScore(args[i])
+		i++
+	}
+	if i < len(args) {
+		opts.Max, opts.MaxEx = parseScore(args[i])
+		i++
+	}
+	for i < len(args) {
+		switch strings.ToUpper(args[i]) {
+		case "WITHSCORES":
+			opts.WithScores = true
+			i++
+		case "LIMIT":
+			if i+2 >= len(args) {
+				return opts, errors.New("LIMIT requires 2 arguments")
+			}
+			opts.Limit = true
+			opts.Offset, _ = strconv.Atoi(args[i+1])
+			opts.Count, _ = strconv.Atoi(args[i+2])
+			i += 3
+		default:
+			return opts, errors.New("syntax error")
+		}
+	}
+	return opts, nil
+}
+
+func parseScore(s string) (v float64, exclusive bool) {
+	if strings.HasPrefix(s, "(") {
+		exclusive = true
+		s = s[1:]
+	}
+	switch strings.ToLower(s) {
+	case "-inf":
+		return math.Inf(-1), exclusive
+	case "+inf":
+		return math.Inf(1), exclusive
+	}
+	v, _ = strconv.ParseFloat(s, 64)
+	return
+}
+
 type zSetTable[K KEY] struct {
 	idx  *btree.BTreeG[zSetItem[K]]
 	dict map[K]*zSetItem[K]
@@ -55,6 +115,13 @@ type zSetTable[K KEY] struct {
 
 type LIRList[V VALUE] struct {
 	l *list.List
+}
+
+func newZSetTable[K KEY]() *zSetTable[K] {
+	return &zSetTable[K]{
+		idx:  btree.NewBTreeG(zSetLess[K]),
+		dict: make(map[K]*zSetItem[K]),
+	}
 }
 
 func NewLIRList[V VALUE]() *LIRList[V] {
@@ -357,6 +424,220 @@ func (sharDb *bucket[K, V]) get(key K) (dbItem[K, V], error) {
 	} else {
 		return dbItem[K, V]{key: key}, errors.New("not found")
 	}
+}
+
+func (sharDb *bucket[K, V]) zAdd(key K, score float64, member K) (int, error) {
+	sharDb.mu.Lock()
+	defer sharDb.mu.Unlock()
+	zt, ok := sharDb.zMaps[key]
+	if !ok {
+		zt = newZSetTable[K]()
+		sharDb.zMaps[key] = zt
+	}
+
+	old, exists := zt.dict[member]
+	if exists {
+		zt.idx.Delete(*old)
+		old.score = score
+		zt.idx.Set(*old)
+		return 0, nil
+	}
+
+	it := &zSetItem[K]{
+		score:  score,
+		member: member,
+	}
+	zt.dict[member] = it
+	zt.idx.Set(*it)
+	return 1, nil
+
+}
+
+func (sharDB *bucket[K, V]) zRem(key K, member K) int {
+	sharDB.mu.Lock()
+	defer sharDB.mu.Unlock()
+	zt, ok := sharDB.zMaps[key]
+	if !ok {
+		return 0
+	}
+	it, ok := zt.dict[member]
+	if !ok {
+		return 0
+	}
+	zt.idx.Delete(*it)
+	delete(zt.dict, member)
+	if len(zt.dict) == 0 {
+		delete(sharDB.zMaps, key)
+	}
+	return 1
+}
+
+func (sharDb *bucket[K, V]) zScore(key K, member K) (float64, bool) {
+	sharDb.mu.RLock()
+	defer sharDb.mu.RUnlock()
+	zt, ok := sharDb.zMaps[key]
+	if !ok {
+		return 0, false
+	}
+	it, ok := zt.dict[member]
+	if !ok {
+		return 0, false
+	}
+	return it.score, true
+}
+
+func (sharDb *bucket[K, V]) zCard(key K) int {
+	sharDb.mu.RLock()
+	defer sharDb.mu.RUnlock()
+	zt, ok := sharDb.zMaps[key]
+	if !ok {
+		return 0
+	}
+	return len(zt.dict)
+}
+
+func adjustIndex(idx, n int) int {
+	if idx < 0 {
+		idx += n
+	}
+	if idx >= n {
+		idx = n - 1
+	}
+	return idx
+}
+
+func (sharDb *bucket[K, V]) zRange(key K, start, stop int, isReverse bool) []K {
+	sharDb.mu.RLock()
+	defer sharDb.mu.RUnlock()
+	zt, ok := sharDb.zMaps[key]
+	if !ok {
+		return nil
+	}
+	n := zt.idx.Len()
+	start = adjustIndex(start, n)
+	stop = adjustIndex(stop, n)
+	if start > stop {
+		return nil
+	}
+	out := make([]K, 0, stop-start+1)
+	i := 0
+	iter := zt.idx.Scan
+	if isReverse {
+		iter = zt.idx.Reverse
+	}
+
+	iter(func(it zSetItem[K]) bool {
+		if i >= start && i <= stop {
+			out = append(out, it.member)
+		}
+		i++
+		return i <= stop
+	})
+
+	return out
+
+}
+
+func (sharDb *bucket[K, V]) zRangeByScoreOpts(key K, opts ZRangeByScoreOpts) []interface{} {
+	sharDb.mu.RLock()
+	defer sharDb.mu.RUnlock()
+	zt, ok := sharDb.zMaps[key]
+	if !ok {
+		return nil
+	}
+	var out []interface{}
+	n := 0
+	iter := zt.idx.Scan
+	if opts.Reverse {
+		iter = zt.idx.Reverse
+	}
+
+	iter(func(it zSetItem[K]) bool {
+		if !opts.MinEx && it.score < opts.Min {
+			return true
+		}
+		if opts.MinEx && it.score <= opts.Min {
+			return true
+		}
+		// 上界
+		if !opts.MaxEx && it.score > opts.Max {
+			return false
+		}
+		if opts.MaxEx && it.score >= opts.Max {
+			return false
+		}
+		if opts.Limit {
+			if n < opts.Offset {
+				n++
+				return true
+			}
+			if n >= opts.Offset+opts.Count {
+				return false
+			}
+		}
+		out = append(out, it.member)
+		if opts.WithScores {
+			out = append(out, it.score)
+		}
+		n++
+		return true
+	})
+
+	return out
+
+}
+
+func (db *BucketCache[K, V]) zRangeByScoreOpts(key K, opts ZRangeByScoreOpts) ([]interface{}, error) {
+	idx := db.hasher.Hash(key) % db.shardN
+	return db.buckets[idx].zRangeByScoreOpts(key, opts), nil
+}
+
+func (db *BucketCache[K, V]) ZRevRangeByScore(key K, args ...string) ([]interface{}, error) {
+	opts, err := ParseZRangeByScoreArgs(args)
+	if err != nil {
+		return nil, err
+	}
+	opts.Reverse = true
+	return db.zRangeByScoreOpts(key, opts)
+}
+
+func (db *BucketCache[K, V]) ZRangeByScore(key K, args ...string) ([]interface{}, error) {
+	opts, err := ParseZRangeByScoreArgs(args)
+	if err != nil {
+		return nil, err
+	}
+	opts.Reverse = false
+	return db.zRangeByScoreOpts(key, opts)
+}
+
+func (db *BucketCache[K, V]) ZAdd(key K, score float64, member K) (int, error) {
+	idx := db.hasher.Hash(key) % db.shardN
+	return db.buckets[idx].zAdd(key, score, member)
+}
+
+func (db *BucketCache[K, V]) ZRem(key K, member K) int {
+	idx := db.hasher.Hash(key) % db.shardN
+	return db.buckets[idx].zRem(key, member)
+}
+
+func (db *BucketCache[K, V]) ZScore(key K, member K) (float64, bool) {
+	idx := db.hasher.Hash(key) % db.shardN
+	return db.buckets[idx].zScore(key, member)
+}
+
+func (db *BucketCache[K, V]) ZCard(key K) int {
+	idx := db.hasher.Hash(key) % db.shardN
+	return db.buckets[idx].zCard(key)
+}
+
+func (db *BucketCache[K, V]) ZRange(key K, start, stop int) []K {
+	idx := db.hasher.Hash(key) % db.shardN
+	return db.buckets[idx].zRange(key, start, stop, false)
+}
+
+func (db *BucketCache[K, V]) ZRevRange(key K, start, stop int) []K {
+	idx := db.hasher.Hash(key) % db.shardN
+	return db.buckets[idx].zRange(key, start, stop, true)
 }
 
 func defaultHasher[K KEY]() Hasher[K] {
