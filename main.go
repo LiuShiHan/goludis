@@ -5,6 +5,7 @@ import (
 	"github.com/tidwall/redcon"
 	"goludis/cache"
 	"log"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -26,6 +27,10 @@ func currentDB(conn redcon.Conn) int {
 		return v.(int)
 	}
 	return defaultDB
+}
+
+func dbKey(conn redcon.Conn, key string) (string, string) {
+	return key, fmt.Sprintf("%d:%s", currentDB(conn), key)
 }
 
 func writeZSetReply(conn redcon.Conn, members []interface{}, withScores bool) {
@@ -86,7 +91,7 @@ func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
 			conn.WriteError("ERR wrong number of arguments for '" + string(cmd.Args[0]) + "' command")
 			return
 		}
-		key := string(cmd.Args[1])
+		_, keyId := dbKey(conn, string(cmd.Args[1]))
 		value := string(cmd.Args[2])
 		var opt *cache.SetOptions
 		if len(cmd.Args) == 5 && strings.ToUpper(string(cmd.Args[3])) == "EX" {
@@ -100,7 +105,7 @@ func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
 				TTL:     time.Duration(ttlSec) * time.Second,
 			}
 		}
-		err := db.Set(key, value, opt)
+		err := db.Set(keyId, value, opt)
 		if err != nil {
 			conn.WriteError("SET error: " + err.Error())
 		}
@@ -112,8 +117,8 @@ func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
 			conn.WriteError("ERR wrong number of arguments for '" + string(cmd.Args[0]) + "' command")
 			return
 		}
-		key := string(cmd.Args[1])
-		val, err := db.Get(key)
+		_, keyId := dbKey(conn, string(cmd.Args[1]))
+		val, err := db.Get(keyId)
 		if err != nil {
 			conn.WriteNull()
 		} else {
@@ -125,9 +130,9 @@ func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
 			conn.WriteError("ERR wrong number of arguments for '" + string(cmd.Args[0]) + "' command")
 			return
 		}
-		key := string(cmd.Args[1])
+		_, keyId := dbKey(conn, string(cmd.Args[1]))
 		for i := 2; i < len(cmd.Args); i++ {
-			db.LPush(key, string(cmd.Args[i]))
+			db.LPush(keyId, string(cmd.Args[i]))
 		}
 		conn.WriteInt(len(cmd.Args) - 2)
 	case "BRPOP":
@@ -136,13 +141,13 @@ func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
 			conn.WriteError("ERR wrong number of arguments for '" + string(cmd.Args[0]) + "' command")
 			return
 		}
-		key := string(cmd.Args[1])
+		key, keyId := dbKey(conn, string(cmd.Args[1]))
 		timeoutSec, err := strconv.Atoi(string(cmd.Args[2]))
 		if err != nil {
 			conn.WriteError("ERR invalid timeout time")
 			return
 		}
-		val, err := db.BRPop(key, time.Duration(timeoutSec)*time.Second)
+		val, err := db.BRPop(keyId, time.Duration(timeoutSec)*time.Second)
 		if err != nil {
 			conn.WriteNull()
 		} else {
@@ -155,8 +160,8 @@ func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
 			conn.WriteError("ERR wrong number of arguments for '" + string(cmd.Args[0]) + "' command")
 			return
 		}
-		key := string(cmd.Args[1])
-		_, err := db.Get(key)
+		_, keyId := dbKey(conn, string(cmd.Args[1]))
+		_, err := db.Get(keyId)
 		if err != nil {
 			conn.WriteInt(0)
 		} else {
@@ -170,12 +175,11 @@ func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
 		}
 		count := 0
 		for i := 1; i < len(cmd.Args); i++ {
-			key := string(cmd.Args[i])
-			if _, err := db.Get(key); err == nil {
-				err := db.Delete(key)
-				if err != nil {
-					return
-				}
+			_, keyId := dbKey(conn, string(cmd.Args[i]))
+
+			if _, err := db.Get(keyId); err == nil {
+				db.Delete(keyId)
+
 				count++
 			}
 		}
@@ -185,8 +189,9 @@ func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
 			conn.WriteError("ERR wrong number of arguments for '" + string(cmd.Args[0]) + "' command")
 			return
 		}
-		key := string(cmd.Args[1])
-		val, err := db.RPop(key)
+		_, keyId := dbKey(conn, string(cmd.Args[1]))
+
+		val, err := db.RPop(keyId)
 		if err != nil {
 			conn.WriteNull()
 		} else {
@@ -198,15 +203,15 @@ func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
 			conn.WriteError("ERR wrong number of arguments for '" + string(cmd.Args[0]) + "' command")
 			return
 		}
-		key := string(cmd.Args[1])
-		length := db.LLen(key)
+		_, keyId := dbKey(conn, string(cmd.Args[1]))
+		length := db.LLen(keyId)
 		conn.WriteInt(length)
 	case "ZADD":
 		if len(cmd.Args) < 4 || (len(cmd.Args)-2)%2 != 0 {
 			conn.WriteError("ERR wrong number of arguments for '" + string(cmd.Args[0]) + "' command")
 			return
 		}
-		key := string(cmd.Args[1])
+		_, keyId := dbKey(conn, string(cmd.Args[1]))
 		added := 0
 		for i := 2; i < len(cmd.Args); i += 2 {
 			score, err := strconv.ParseFloat(string(cmd.Args[i]), 64)
@@ -215,7 +220,7 @@ func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
 				return
 			}
 			member := string(cmd.Args[i+1])
-			n, err := db.ZAdd(key, score, member)
+			n, err := db.ZAdd(keyId, score, member)
 			added += n
 		}
 		conn.WriteInt(added)
@@ -225,10 +230,10 @@ func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
 			conn.WriteError("ERR wrong number of arguments for '" + string(cmd.Args[0]) + "' command")
 			return
 		}
-		key := string(cmd.Args[1])
+		_, keyId := dbKey(conn, string(cmd.Args[1]))
 		removed := 0
 		for i := 2; i < len(cmd.Args); i++ {
-			removed += db.ZRem(key, string(cmd.Args[i]))
+			removed += db.ZRem(keyId, string(cmd.Args[i]))
 		}
 		conn.WriteInt(removed)
 
@@ -237,7 +242,8 @@ func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
 			conn.WriteError("ERR wrong number of arguments for '" + string(cmd.Args[0]) + "' command")
 			return
 		}
-		score, ok := db.ZScore(string(cmd.Args[1]), string(cmd.Args[2]))
+		_, keyId := dbKey(conn, string(cmd.Args[1]))
+		score, ok := db.ZScore(keyId, string(cmd.Args[2]))
 		if !ok {
 			conn.WriteNull()
 		} else {
@@ -249,7 +255,7 @@ func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
 			conn.WriteError("ERR wrong number of arguments for '" + string(cmd.Args[0]) + "' command")
 			return
 		}
-		key := string(cmd.Args[1])
+		_, keyId := dbKey(conn, string(cmd.Args[1]))
 		start, err := strconv.Atoi(string(cmd.Args[2]))
 		if err != nil {
 			conn.WriteError("ERR wrong start index: " + err.Error())
@@ -261,7 +267,7 @@ func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
 			return
 		}
 		withScores := len(cmd.Args) == 5 && strings.ToUpper(string(cmd.Args[4])) == "WITHSCORES"
-		member := db.ZRange(key, start, stop)
+		member := db.ZRange(keyId, start, stop)
 		writeZSetReply(conn, any(member).([]interface{}), withScores)
 
 	case "ZREVRANGE":
@@ -269,7 +275,7 @@ func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
 			conn.WriteError("ERR wrong number of arguments for '" + string(cmd.Args[0]) + "' command")
 			return
 		}
-		key := string(cmd.Args[1])
+		_, keyId := dbKey(conn, string(cmd.Args[1]))
 		start, err := strconv.Atoi(string(cmd.Args[2]))
 		if err != nil {
 			conn.WriteError("ERR wrong start index: " + err.Error())
@@ -280,7 +286,7 @@ func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
 			conn.WriteError("ERR wrong stop index: " + err.Error())
 		}
 		withScores := len(cmd.Args) == 5 && strings.ToUpper(string(cmd.Args[4])) == "WITHSCORES"
-		member := db.ZRevRange(key, start, stop)
+		member := db.ZRevRange(keyId, start, stop)
 		writeZSetReply(conn, any(member).([]interface{}), withScores)
 
 	case "ZRANGEBYSCORE":
@@ -288,12 +294,12 @@ func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
 			conn.WriteError("ERR wrong number of arguments for '" + string(cmd.Args[0]) + "' command")
 			return
 		}
-		key := string(cmd.Args[1])
+		_, keyId := dbKey(conn, string(cmd.Args[1]))
 		args := make([]string, len(cmd.Args)-2)
 		for i := 2; i < len(cmd.Args); i++ {
 			args[i-2] = string(cmd.Args[i])
 		}
-		members, err := db.ZRangeByScore(key, args...)
+		members, err := db.ZRangeByScore(keyId, args...)
 		if err != nil {
 			conn.WriteError("ERR " + err.Error())
 			return
@@ -312,12 +318,12 @@ func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
 			conn.WriteError("ERR wrong number of arguments for 'zrevrangebyscore' command")
 			return
 		}
-		key := string(cmd.Args[1])
+		_, keyId := dbKey(conn, string(cmd.Args[1]))
 		args := make([]string, len(cmd.Args)-2)
 		for i := 2; i < len(cmd.Args); i++ {
 			args[i-2] = string(cmd.Args[i])
 		}
-		members, err := db.ZRevRangeByScore(key, args...)
+		members, err := db.ZRevRangeByScore(keyId, args...)
 		if err != nil {
 			conn.WriteError("ERR " + err.Error())
 			return
@@ -338,16 +344,25 @@ func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
 }
 
 func main() {
-
+	if len(os.Args) < 2 {
+		fmt.Fprintf(os.Stderr, "Usage: %s <config-file>\n", os.Args[0])
+		os.Exit(1)
+	}
+	configPath := os.Args[1]
+	fmt.Println("Loading config from", configPath)
 	var err error
-	db, err = cache.NewCache[string, string](4)
+
+	config, err := ReadConfig(configPath)
+	if err != nil {
+		panic(err)
+	}
+	db, err = cache.NewCache[string, string](config.Shards)
 	if err != nil {
 		panic(err)
 	}
 
-	addr := ":6379"
-	log.Println("Starting Redis-compatible server on", addr)
-	err = redcon.ListenAndServe(addr,
+	log.Println("Starting Redis-compatible server on", config.Addr)
+	err = redcon.ListenAndServe(config.Addr,
 		handleRedisCommand,
 		acceptHandler,
 		func(conn redcon.Conn, err error) { log.Println("closed:", err) },
@@ -357,23 +372,3 @@ func main() {
 	}
 
 }
-
-// 127.0.0.1:6379> ZADD z 1 one 2 two 3 three 4 four
-//(integer) 4
-//127.0.0.1:6379> ZRANGEBYSCORE z (1 4 WITHSCORES LIMIT 0 2
-//1) "two"
-//2) "2"
-//3) "three"
-//4) "3"
-//127.0.0.1:6379> ZREVRANGEBYSCORE z -inf +inf LIMIT 1 2
-//1) "three"
-//2) "two"
-//127.0.0.1:6379> ZRANGE z 0 -1 WITHSCORES
-//1) "one"
-//2) "1"
-//3) "two"
-//4) "2"
-//5) "three"
-//6) "3"
-//7) "four"
-//8) "4"

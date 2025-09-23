@@ -1,0 +1,8 @@
+# redis 协议监听地址
+addr: ":6379"
+
+# 缓存分片数量，对应你原来的 4
+shards: 4
+
+# 日志级别（debug/info/warn/error）
+log_level: "info"
