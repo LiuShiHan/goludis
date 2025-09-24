@@ -377,23 +377,36 @@ func (sharDB *bucket[K, V]) brPop(key K, timeout time.Duration) (val V, err erro
 	ch := bc.sub()
 	sharDB.mu.Unlock()
 	var zero V
-	for {
+	if timeout > 0 {
+		for {
 
-		select {
-		case <-ch:
-			val, err := sharDB.rPop(key)
-			if err == nil {
-				return val, nil
+			select {
+			case <-ch:
+				val, err := sharDB.rPop(key)
+				if err == nil {
+					return val, nil
+				}
+
+			case <-time.After(timeout):
+				bc.unsub(ch)
+				close(ch)
+				return zero, errors.New("timeout")
+
 			}
 
-		case <-time.After(timeout):
-			bc.unsub(ch)
-			close(ch)
-			return zero, errors.New("timeout")
-
 		}
-
+	} else {
+		for {
+			select {
+			case <-ch:
+				val, err := sharDB.rPop(key)
+				if err == nil {
+					return val, nil
+				}
+			}
+		}
 	}
+
 }
 
 func (sharDb *bucket[K, V]) set(item dbItem[K, V]) error {

@@ -15,13 +15,11 @@ var db *cache.BucketCache[string, string]
 
 const defaultDB = 0
 
-// 连接建立时把默认库挂上去
 func acceptHandler(conn redcon.Conn) bool {
 	conn.SetContext(defaultDB) // 初始 DB 0
 	return true
 }
 
-// 统一读当前库的小助手
 func currentDB(conn redcon.Conn) int {
 	if v := conn.Context(); v != nil {
 		return v.(int)
@@ -66,7 +64,6 @@ func writeZSetReply(conn redcon.Conn, members []interface{}, withScores bool) {
 }
 
 func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
-	// 加上 识别 redis链接时候选择的DB
 
 	switch strings.ToUpper(string(cmd.Args[0])) {
 
@@ -142,6 +139,7 @@ func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
 			return
 		}
 		key, keyId := dbKey(conn, string(cmd.Args[1]))
+		fmt.Println(string(cmd.Args[2]))
 		timeoutSec, err := strconv.Atoi(string(cmd.Args[2]))
 		if err != nil {
 			conn.WriteError("ERR invalid timeout time")
@@ -178,7 +176,10 @@ func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
 			_, keyId := dbKey(conn, string(cmd.Args[i]))
 
 			if _, err := db.Get(keyId); err == nil {
-				db.Delete(keyId)
+				err := db.Delete(keyId)
+				if err != nil {
+					continue
+				}
 
 				count++
 			}
@@ -345,7 +346,10 @@ func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintf(os.Stderr, "Usage: %s <config-file>\n", os.Args[0])
+		_, err := fmt.Fprintf(os.Stderr, "Usage: %s <config-file>\n", os.Args[0])
+		if err != nil {
+			panic(err)
+		}
 		os.Exit(1)
 	}
 	configPath := os.Args[1]
