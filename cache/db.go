@@ -2,7 +2,9 @@ package cache
 
 import (
 	"container/list"
+	"context"
 	"errors"
+	"fmt"
 	"github.com/tidwall/assert"
 	"github.com/tidwall/btree"
 	"math"
@@ -306,10 +308,10 @@ func (db *BucketCache[K, V]) LLen(key K) int {
 
 }
 
-func (db *BucketCache[K, V]) BRPop(key K, timeout time.Duration) (val V, err error) {
+func (db *BucketCache[K, V]) BRPop(ctx context.Context, key K, timeout time.Duration) (val V, err error) {
 	idx := db.hasher.Hash(key) % db.shardN
 	bucket := db.buckets[idx]
-	return bucket.brPop(key, timeout)
+	return bucket.brPop(ctx, key, timeout)
 }
 
 func (db *BucketCache[K, V]) RPop(key K) (val V, err error) {
@@ -362,7 +364,7 @@ func (b *bucket[K, V]) lLen(key K) int {
 	return l.l.Len()
 }
 
-func (sharDB *bucket[K, V]) brPop(key K, timeout time.Duration) (val V, err error) {
+func (sharDB *bucket[K, V]) brPop(ctx context.Context, key K, timeout time.Duration) (val V, err error) {
 
 	val, err = sharDB.rPop(key)
 
@@ -389,10 +391,19 @@ func (sharDB *bucket[K, V]) brPop(key K, timeout time.Duration) (val V, err erro
 				if err == nil {
 					return val, nil
 				}
-
-			case <-time.After(timeout):
+			case <-ctx.Done():
+				sharDB.mu.Lock()
 				bc.unsub(ch)
 				close(ch)
+				sharDB.mu.Unlock()
+				fmt.Println("Done!!!")
+				return zero, errors.New("close")
+
+			case <-time.After(timeout):
+				sharDB.mu.Lock()
+				bc.unsub(ch)
+				close(ch)
+				sharDB.mu.Unlock()
 				return zero, errors.New("timeout")
 
 			}
@@ -403,9 +414,17 @@ func (sharDB *bucket[K, V]) brPop(key K, timeout time.Duration) (val V, err erro
 			select {
 			case <-ch:
 				val, err := sharDB.rPop(key)
+				fmt.Println(val)
 				if err == nil {
 					return val, nil
 				}
+			case <-ctx.Done():
+				sharDB.mu.Lock()
+				bc.unsub(ch)
+				close(ch)
+				sharDB.mu.Unlock()
+				fmt.Println("Done!!!")
+				return zero, errors.New("close")
 			}
 		}
 	}
@@ -675,7 +694,7 @@ func (db *BucketCache[K, V]) clearMem() {
 func (db *BucketCache[K, V]) TimerTask() {
 	for {
 		select {
-		case <-time.After(time.Second * 60):
+		case <-time.After(time.Second * 1):
 			db.clearMem()
 		}
 	}
@@ -725,7 +744,6 @@ func NewCache[K KEY, V VALUE](shardBits int) (*BucketCache[K, V], error) {
 		}
 	}
 	go buctetCache.TimerTask()
-
 	return buctetCache, nil
 }
 

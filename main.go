@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"github.com/tidwall/redcon"
 	"goludis/cache"
@@ -13,16 +14,28 @@ import (
 
 var db *cache.BucketCache[string, string]
 
+type LudisParams struct {
+	Db     int
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
 const defaultDB = 0
 
 func acceptHandler(conn redcon.Conn) bool {
-	conn.SetContext(defaultDB) // 初始 DB 0
+	ctx, cancel := context.WithCancel(context.Background())
+	ludisParams := &LudisParams{
+		Db:     defaultDB,
+		ctx:    ctx,
+		cancel: cancel,
+	}
+	conn.SetContext(ludisParams) // 初始 DB 0
 	return true
 }
 
 func currentDB(conn redcon.Conn) int {
 	if v := conn.Context(); v != nil {
-		return v.(int)
+		return v.(*LudisParams).Db
 	}
 	return defaultDB
 }
@@ -84,7 +97,9 @@ func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
 			return
 		}
 		// 真正切换
-		conn.SetContext(idx)
+		ludisParams := conn.Context().(*LudisParams)
+		ludisParams.Db = idx
+		conn.SetContext(ludisParams)
 		log.Printf("client switched to DB %d", idx)
 		conn.WriteString("OK")
 		return
@@ -146,13 +161,13 @@ func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
 			return
 		}
 		key, keyId := dbKey(conn, string(cmd.Args[1]))
-
+		ctx := conn.Context().(*LudisParams).ctx
 		timeoutSec, err := strconv.Atoi(string(cmd.Args[2]))
 		if err != nil {
 			conn.WriteError("ERR invalid timeout time")
 			return
 		}
-		val, err := db.BRPop(keyId, time.Duration(timeoutSec)*time.Second)
+		val, err := db.BRPop(ctx, keyId, time.Duration(timeoutSec)*time.Second)
 		if err != nil {
 			conn.WriteNull()
 		} else {
@@ -404,7 +419,12 @@ func main() {
 	err = redcon.ListenAndServe(config.Addr,
 		handleRedisCommand,
 		acceptHandler,
-		func(conn redcon.Conn, err error) { log.Println("closed:", err) },
+		func(conn redcon.Conn, err error) {
+			ludisParams := conn.Context().(*LudisParams)
+			ludisParams.cancel()
+			println("dwadwad close")
+			log.Println("closed:", err)
+		},
 	)
 	if err != nil {
 		log.Fatal(err)
