@@ -65,6 +65,12 @@ func writeZSetReply(conn redcon.Conn, members []interface{}, withScores bool) {
 
 func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
 
+	//fmt.Println("start")
+	//for i := range len(cmd.Args) {
+	//	fmt.Println("arg", string(cmd.Args[i]))
+	//}
+	//fmt.Println("end")
+
 	switch strings.ToUpper(string(cmd.Args[0])) {
 
 	case "SELECT":
@@ -110,7 +116,8 @@ func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
 
 	case "GET":
 		if len(cmd.Args) != 2 {
-			fmt.Println("GET")
+			fmt.Println("wrong GET")
+
 			conn.WriteError("ERR wrong number of arguments for '" + string(cmd.Args[0]) + "' command")
 			return
 		}
@@ -338,6 +345,34 @@ func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
 		}
 		writeZSetReply(conn, members, withScores)
 
+	case "PING":
+		if len(cmd.Args) == 1 {
+			conn.WriteString("PONG")
+		} else {
+			conn.WriteBulkString(string(cmd.Args[1]))
+		}
+
+	case "INFO":
+		info := "# Server\r\nredis_version:7.0.0\r\nredis_mode:standalone\r\n"
+		conn.WriteBulkString(info)
+
+	case "CLIENT":
+		if len(cmd.Args) >= 2 && strings.ToUpper(string(cmd.Args[1])) == "SETNAME" {
+			conn.WriteString("OK")
+		} else {
+			conn.WriteError("ERR unknown CLIENT subcommand")
+		}
+
+	case "CLUSTER":
+		if len(cmd.Args) >= 2 && strings.ToUpper(string(cmd.Args[1])) == "SLOTS" {
+			conn.WriteArray(0)
+		} else {
+			conn.WriteError("ERR unknown CLUSTER subcommand")
+		}
+
+	case "COMMAND":
+		conn.WriteArray(0)
+
 	default:
 		conn.WriteError(fmt.Sprintf("ERR unknown command '%s'", string(cmd.Args[0])))
 	}
@@ -376,3 +411,5 @@ func main() {
 	}
 
 }
+
+//2025/09/25 13:22:01 closed: read tcp 127.0.0.1:6380->127.0.0.1:56876: wsarecv: An existing connection was forcibly closed by the remote host.
