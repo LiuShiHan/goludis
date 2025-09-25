@@ -146,7 +146,7 @@ func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
 			return
 		}
 		key, keyId := dbKey(conn, string(cmd.Args[1]))
-		fmt.Println(string(cmd.Args[2]))
+
 		timeoutSec, err := strconv.Atoi(string(cmd.Args[2]))
 		if err != nil {
 			conn.WriteError("ERR invalid timeout time")

@@ -345,6 +345,7 @@ func (sharDB *bucket[K, V]) rPop(key K) (val V, err error) {
 		if err != nil {
 			return zero, err
 		}
+
 		return val, nil
 	}
 	return zero, errors.New("key not found")
@@ -362,6 +363,7 @@ func (b *bucket[K, V]) lLen(key K) int {
 }
 
 func (sharDB *bucket[K, V]) brPop(key K, timeout time.Duration) (val V, err error) {
+
 	val, err = sharDB.rPop(key)
 
 	if err == nil {
@@ -375,6 +377,7 @@ func (sharDB *bucket[K, V]) brPop(key K, timeout time.Duration) (val V, err erro
 	}
 	bc := sharDB.listChan[key]
 	ch := bc.sub()
+
 	sharDB.mu.Unlock()
 	var zero V
 	if timeout > 0 {
@@ -574,7 +577,6 @@ func (sharDb *bucket[K, V]) zRangeByScoreOpts(key K, opts ZRangeByScoreOpts) []i
 		if opts.MinEx && it.score <= opts.Min {
 			return true
 		}
-		// 上界
 		if !opts.MaxEx && it.score > opts.Max {
 			return false
 		}
@@ -653,6 +655,32 @@ func (db *BucketCache[K, V]) ZRevRange(key K, start, stop int) []interface{} {
 	return db.buckets[idx].zRange(key, start, stop, true)
 }
 
+func (db *BucketCache[K, V]) clearMem() {
+	for _, bucket := range db.buckets {
+		bucket.mu.Lock()
+		for key := range bucket.listChan {
+			if len(bucket.listChan[key].subs) == 0 {
+				delete(bucket.listChan, key)
+			}
+		}
+		for key := range bucket.listMap {
+			if bucket.listMap[key].l.Len() == 0 {
+				delete(bucket.listMap, key)
+			}
+		}
+		bucket.mu.Unlock()
+	}
+}
+
+func (db *BucketCache[K, V]) TimerTask() {
+	for {
+		select {
+		case <-time.After(time.Second * 60):
+			db.clearMem()
+		}
+	}
+}
+
 func defaultHasher[K KEY]() Hasher[K] {
 	var zero K
 	switch any(zero).(type) {
@@ -696,6 +724,7 @@ func NewCache[K KEY, V VALUE](shardBits int) (*BucketCache[K, V], error) {
 			zMaps:    make(map[K]*zSetTable[K]),
 		}
 	}
+	go buctetCache.TimerTask()
 
 	return buctetCache, nil
 }
