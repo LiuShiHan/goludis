@@ -672,7 +672,7 @@ func (db *BucketCache[K, V]) clearMem() {
 func (db *BucketCache[K, V]) TimerTask() {
 	for {
 		select {
-		case <-time.After(time.Second * 1):
+		case <-time.After(time.Second * 60):
 			db.clearMem()
 		}
 	}

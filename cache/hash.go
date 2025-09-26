@@ -13,12 +13,14 @@ type strHasher struct{}
 
 func (strHasher) Hash(k string) uint64 {
 	h := fnv.New64a()
-	h.Write([]byte(k))
+	_, err := h.Write([]byte(k))
+	if err != nil {
+		panic(err)
+	}
 	return h.Sum64()
 }
 func (strHasher) Equal(a, b string) bool { return a == b }
 
-// ---------- 整数 ----------
 type intHasher struct{}
 
 func (intHasher) Hash(k int) uint64   { return uint64(k) }
