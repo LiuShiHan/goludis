@@ -313,20 +313,20 @@ func (db *BucketCache[K, V]) RPop(key K) (val V, err error) {
 	return bucket.rPop(key)
 }
 
-func (sharDb *bucket[K, V]) lPush(key K, val V) {
-	sharDb.mu.Lock()
-	defer sharDb.mu.Unlock()
-	if l, ok := sharDb.listMap[key]; ok {
+func (sharDB *bucket[K, V]) lPush(key K, val V) {
+	sharDB.mu.Lock()
+	defer sharDB.mu.Unlock()
+	if l, ok := sharDB.listMap[key]; ok {
 		l.LPush(val)
 	} else {
-		sharDb.listMap[key] = NewLIRList[V]()
-		sharDb.listMap[key].LPush(val)
+		sharDB.listMap[key] = NewLIRList[V]()
+		sharDB.listMap[key].LPush(val)
 	}
 
-	if _, ok := sharDb.listChan[key]; ok {
-		sharDb.listChan[key].pub(1)
+	if _, ok := sharDB.listChan[key]; ok {
+		sharDB.listChan[key].pub(1)
 	} else {
-		sharDb.listChan[key] = &listBroadcast{}
+		sharDB.listChan[key] = &listBroadcast{}
 	}
 
 }
@@ -409,30 +409,30 @@ func (sharDB *bucket[K, V]) brPop(key K, timeout time.Duration) (val V, err erro
 
 }
 
-func (sharDb *bucket[K, V]) set(item dbItem[K, V]) error {
-	sharDb.mu.Lock()
-	defer sharDb.mu.Unlock()
-	sharDb.keys.Set(item)
+func (sharDB *bucket[K, V]) set(item dbItem[K, V]) error {
+	sharDB.mu.Lock()
+	defer sharDB.mu.Unlock()
+	sharDB.keys.Set(item)
 	if item.opts != nil {
 
-		sharDb.exps.Set(item)
-		minKey, ok := sharDb.exps.Min()
+		sharDB.exps.Set(item)
+		minKey, ok := sharDB.exps.Min()
 		if ok {
 			if !lessTimeFunc(minKey, item) {
-				sharDb.scheduleTimerLocked()
+				sharDB.scheduleTimerLocked()
 			}
 		} else {
-			sharDb.scheduleTimerLocked()
+			sharDB.scheduleTimerLocked()
 		}
 
 	}
 	return nil
 }
 
-func (sharDb *bucket[K, V]) get(key K) (dbItem[K, V], error) {
-	sharDb.mu.RLock()
-	defer sharDb.mu.RUnlock()
-	item, ok := sharDb.keys.Get(dbItem[K, V]{key: key})
+func (sharDB *bucket[K, V]) get(key K) (dbItem[K, V], error) {
+	sharDB.mu.RLock()
+	defer sharDB.mu.RUnlock()
+	item, ok := sharDB.keys.Get(dbItem[K, V]{key: key})
 	if ok {
 		return item, nil
 	} else {
@@ -440,13 +440,13 @@ func (sharDb *bucket[K, V]) get(key K) (dbItem[K, V], error) {
 	}
 }
 
-func (sharDb *bucket[K, V]) zAdd(key K, score float64, member K) (int, error) {
-	sharDb.mu.Lock()
-	defer sharDb.mu.Unlock()
-	zt, ok := sharDb.zMaps[key]
+func (sharDB *bucket[K, V]) zAdd(key K, score float64, member K) (int, error) {
+	sharDB.mu.Lock()
+	defer sharDB.mu.Unlock()
+	zt, ok := sharDB.zMaps[key]
 	if !ok {
 		zt = newZSetTable[K]()
-		sharDb.zMaps[key] = zt
+		sharDB.zMaps[key] = zt
 	}
 
 	old, exists := zt.dict[member]
@@ -486,10 +486,10 @@ func (sharDB *bucket[K, V]) zRem(key K, member K) int {
 	return 1
 }
 
-func (sharDb *bucket[K, V]) zScore(key K, member K) (float64, bool) {
-	sharDb.mu.RLock()
-	defer sharDb.mu.RUnlock()
-	zt, ok := sharDb.zMaps[key]
+func (sharDB *bucket[K, V]) zScore(key K, member K) (float64, bool) {
+	sharDB.mu.RLock()
+	defer sharDB.mu.RUnlock()
+	zt, ok := sharDB.zMaps[key]
 	if !ok {
 		return 0, false
 	}
@@ -500,10 +500,10 @@ func (sharDb *bucket[K, V]) zScore(key K, member K) (float64, bool) {
 	return it.score, true
 }
 
-func (sharDb *bucket[K, V]) zCard(key K) int {
-	sharDb.mu.RLock()
-	defer sharDb.mu.RUnlock()
-	zt, ok := sharDb.zMaps[key]
+func (sharDB *bucket[K, V]) zCard(key K) int {
+	sharDB.mu.RLock()
+	defer sharDB.mu.RUnlock()
+	zt, ok := sharDB.zMaps[key]
 	if !ok {
 		return 0
 	}
@@ -520,10 +520,10 @@ func adjustIndex(idx, n int) int {
 	return idx
 }
 
-func (sharDb *bucket[K, V]) zRange(key K, start, stop int, isReverse bool) []interface{} {
-	sharDb.mu.RLock()
-	defer sharDb.mu.RUnlock()
-	zt, ok := sharDb.zMaps[key]
+func (sharDB *bucket[K, V]) zRange(key K, start, stop int, isReverse bool) []interface{} {
+	sharDB.mu.RLock()
+	defer sharDB.mu.RUnlock()
+	zt, ok := sharDB.zMaps[key]
 	if !ok {
 		return nil
 	}
@@ -553,10 +553,10 @@ func (sharDb *bucket[K, V]) zRange(key K, start, stop int, isReverse bool) []int
 
 }
 
-func (sharDb *bucket[K, V]) zRangeByScoreOpts(key K, opts ZRangeByScoreOpts) []interface{} {
-	sharDb.mu.RLock()
-	defer sharDb.mu.RUnlock()
-	zt, ok := sharDb.zMaps[key]
+func (sharDB *bucket[K, V]) zRangeByScoreOpts(key K, opts ZRangeByScoreOpts) []interface{} {
+	sharDB.mu.RLock()
+	defer sharDB.mu.RUnlock()
+	zt, ok := sharDB.zMaps[key]
 	if !ok {
 		return nil
 	}
