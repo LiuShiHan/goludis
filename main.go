@@ -27,11 +27,10 @@ type LudisParams struct {
 const defaultDB = 0
 
 func acceptHandler(conn redcon.Conn) bool {
-	ludisParams := &LudisParams{
+	conn.SetContext(&LudisParams{
 		Db:  defaultDB,
 		Unc: nil,
-	}
-	conn.SetContext(ludisParams)
+	})
 	return true
 }
 
