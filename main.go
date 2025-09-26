@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"github.com/tidwall/redcon"
 	"goludis/cache"
@@ -14,22 +13,25 @@ import (
 
 var db *cache.BucketCache[string, string]
 
+type Unconfirmed struct {
+	cmd   string
+	keyId string
+	val   string
+}
+
 type LudisParams struct {
-	Db     int
-	ctx    context.Context
-	cancel context.CancelFunc
+	Db  int
+	Unc *Unconfirmed
 }
 
 const defaultDB = 0
 
 func acceptHandler(conn redcon.Conn) bool {
-	ctx, cancel := context.WithCancel(context.Background())
 	ludisParams := &LudisParams{
-		Db:     defaultDB,
-		ctx:    ctx,
-		cancel: cancel,
+		Db:  defaultDB,
+		Unc: nil,
 	}
-	conn.SetContext(ludisParams) // 初始 DB 0
+	conn.SetContext(ludisParams)
 	return true
 }
 
@@ -96,12 +98,13 @@ func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
 			conn.WriteError("ERR invalid DB index")
 			return
 		}
-		// 真正切换
+
 		ludisParams := conn.Context().(*LudisParams)
 		ludisParams.Db = idx
 		conn.SetContext(ludisParams)
 		log.Printf("client switched to DB %d", idx)
 		conn.WriteString("OK")
+
 		return
 
 	case "SET":
@@ -161,16 +164,19 @@ func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
 			return
 		}
 		key, keyId := dbKey(conn, string(cmd.Args[1]))
-		ctx := conn.Context().(*LudisParams).ctx
+
 		timeoutSec, err := strconv.Atoi(string(cmd.Args[2]))
 		if err != nil {
 			conn.WriteError("ERR invalid timeout time")
 			return
 		}
-		val, err := db.BRPop(ctx, keyId, time.Duration(timeoutSec)*time.Second)
+		val, err := db.BRPop(keyId, time.Duration(timeoutSec)*time.Second)
 		if err != nil {
 			conn.WriteNull()
 		} else {
+			if p, ok := conn.Context().(*LudisParams); ok {
+				p.Unc = &Unconfirmed{cmd: "BRPOP", keyId: keyId, val: val}
+			}
 			conn.WriteArray(2)
 			conn.WriteBulkString(key)
 			conn.WriteBulkString(val)
@@ -218,6 +224,9 @@ func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
 		if err != nil {
 			conn.WriteNull()
 		} else {
+			if p, ok := conn.Context().(*LudisParams); ok {
+				p.Unc = &Unconfirmed{cmd: "RPOP", keyId: keyId, val: val}
+			}
 			conn.WriteBulkString(val)
 		}
 
@@ -420,10 +429,15 @@ func main() {
 		handleRedisCommand,
 		acceptHandler,
 		func(conn redcon.Conn, err error) {
-			ludisParams := conn.Context().(*LudisParams)
-			ludisParams.cancel()
-			println("dwadwad close")
-			log.Println("closed:", err)
+			if err == nil {
+				return
+			}
+			if p, ok := conn.Context().(*LudisParams); ok && p.Unc != nil {
+				u := p.Unc
+				db.LPush(u.keyId, u.val)
+				log.Printf("%s rollback: %q pushed back to %s (conn %s closed: %v)",
+					u.cmd, u.val, u.keyId, conn.RemoteAddr(), err)
+			}
 		},
 	)
 	if err != nil {
@@ -431,5 +445,3 @@ func main() {
 	}
 
 }
-
-//2025/09/25 13:22:01 closed: read tcp 127.0.0.1:6380->127.0.0.1:56876: wsarecv: An existing connection was forcibly closed by the remote host.

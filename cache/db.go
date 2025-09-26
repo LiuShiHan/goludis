@@ -2,9 +2,7 @@ package cache
 
 import (
 	"container/list"
-	"context"
 	"errors"
-	"fmt"
 	"github.com/tidwall/assert"
 	"github.com/tidwall/btree"
 	"math"
@@ -147,7 +145,6 @@ func (l *LIRList[V]) RPop() (V, error) {
 type listBroadcast struct {
 	mu   sync.Mutex
 	subs map[chan int]struct{}
-	//order []chan int
 }
 
 func (b *listBroadcast) sub() chan int {
@@ -191,7 +188,6 @@ func (b *bucket[K, V]) scheduleTimerLocked() {
 	b.resetTimer(next)
 }
 
-// dd
 func (b *bucket[K, V]) resetTimer(d time.Duration) {
 	b.timerMu.Lock()
 	defer b.timerMu.Unlock()
@@ -260,12 +256,9 @@ type dbItem[K KEY, V VALUE] struct {
 }
 
 func (db *BucketCache[K, V]) Set(key K, val V, opts *SetOptions) error {
-	//index :=db.hasher.Hash(key)
 	item := &dbItem[K, V]{key: key, val: val}
 	if opts != nil {
 		if opts.Expires {
-			// The caller is requesting that this item expires. Convert the
-			// TTL to an absolute time and bind it to the item.
 			item.opts = &dbItemOpts{expires: true, exat: time.Now().Add(opts.TTL)}
 		}
 
@@ -308,10 +301,10 @@ func (db *BucketCache[K, V]) LLen(key K) int {
 
 }
 
-func (db *BucketCache[K, V]) BRPop(ctx context.Context, key K, timeout time.Duration) (val V, err error) {
+func (db *BucketCache[K, V]) BRPop(key K, timeout time.Duration) (val V, err error) {
 	idx := db.hasher.Hash(key) % db.shardN
 	bucket := db.buckets[idx]
-	return bucket.brPop(ctx, key, timeout)
+	return bucket.brPop(key, timeout)
 }
 
 func (db *BucketCache[K, V]) RPop(key K) (val V, err error) {
@@ -364,7 +357,7 @@ func (b *bucket[K, V]) lLen(key K) int {
 	return l.l.Len()
 }
 
-func (sharDB *bucket[K, V]) brPop(ctx context.Context, key K, timeout time.Duration) (val V, err error) {
+func (sharDB *bucket[K, V]) brPop(key K, timeout time.Duration) (val V, err error) {
 
 	val, err = sharDB.rPop(key)
 
@@ -391,13 +384,6 @@ func (sharDB *bucket[K, V]) brPop(ctx context.Context, key K, timeout time.Durat
 				if err == nil {
 					return val, nil
 				}
-			case <-ctx.Done():
-				sharDB.mu.Lock()
-				bc.unsub(ch)
-				close(ch)
-				sharDB.mu.Unlock()
-				fmt.Println("Done!!!")
-				return zero, errors.New("close")
 
 			case <-time.After(timeout):
 				sharDB.mu.Lock()
@@ -414,17 +400,9 @@ func (sharDB *bucket[K, V]) brPop(ctx context.Context, key K, timeout time.Durat
 			select {
 			case <-ch:
 				val, err := sharDB.rPop(key)
-				fmt.Println(val)
 				if err == nil {
 					return val, nil
 				}
-			case <-ctx.Done():
-				sharDB.mu.Lock()
-				bc.unsub(ch)
-				close(ch)
-				sharDB.mu.Unlock()
-				fmt.Println("Done!!!")
-				return zero, errors.New("close")
 			}
 		}
 	}
