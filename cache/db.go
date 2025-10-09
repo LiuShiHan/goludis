@@ -326,7 +326,7 @@ func (sharDB *bucket[K, V]) lPush(key K, val V) {
 	if _, ok := sharDB.listChan[key]; ok {
 		sharDB.listChan[key].pub(1)
 	} else {
-		sharDB.listChan[key] = &listBroadcast{}
+		sharDB.listChan[key] = &listBroadcast{subs: map[chan int]struct{}{}}
 	}
 
 }
