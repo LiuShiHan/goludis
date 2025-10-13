@@ -79,11 +79,11 @@ func writeZSetReply(conn redcon.Conn, members []interface{}, withScores bool) {
 
 func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
 
-	fmt.Println("start")
-	for i := range len(cmd.Args) {
-		fmt.Println("arg", string(cmd.Args[i]))
-	}
-	fmt.Println("end")
+	//fmt.Println("start")
+	//for i := range len(cmd.Args) {
+	//	fmt.Println("arg", string(cmd.Args[i]))
+	//}
+	//fmt.Println("end")
 
 	switch strings.ToUpper(string(cmd.Args[0])) {
 
