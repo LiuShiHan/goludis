@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -20,11 +21,27 @@ type Unconfirmed struct {
 }
 
 type LudisParams struct {
-	Db  int
-	Unc *Unconfirmed
+	Db    int
+	Unc   *Unconfirmed
+	Queue []redcon.Command
+	Watch map[string]uint64
 }
 
 const defaultDB = 0
+
+var keyVersion = sync.Map{}
+
+func getVer(key string) uint64 {
+	v, _ := keyVersion.LoadOrStore(key, uint64(0))
+	return v.(uint64)
+}
+
+func incrVer(key string) uint64 {
+	v, _ := keyVersion.LoadOrStore(key, uint64(0))
+	newV := v.(uint64) + 1
+	keyVersion.Store(key, newV)
+	return newV
+}
 
 func acceptHandler(conn redcon.Conn) bool {
 	conn.SetContext(&LudisParams{
@@ -79,11 +96,11 @@ func writeZSetReply(conn redcon.Conn, members []interface{}, withScores bool) {
 
 func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
 
-	//fmt.Println("start")
-	//for i := range len(cmd.Args) {
-	//	fmt.Println("arg", string(cmd.Args[i]))
-	//}
-	//fmt.Println("end")
+	fmt.Println("start")
+	for i := range len(cmd.Args) {
+		fmt.Println("arg", string(cmd.Args[i]))
+	}
+	fmt.Println("end")
 
 	switch strings.ToUpper(string(cmd.Args[0])) {
 
