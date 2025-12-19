@@ -14,6 +14,11 @@ import (
 
 var db *cache.BucketCache[string, string]
 
+const (
+	errWatchDirty = "ERR Transaction discarded because watched keys were modified."
+	defaultDB     = 0
+)
+
 type Unconfirmed struct {
 	cmd   string
 	keyId string
@@ -25,21 +30,51 @@ type LudisParams struct {
 	Unc   *Unconfirmed
 	Queue []redcon.Command
 	Watch map[string]uint64
+	Multi bool
 }
 
-const defaultDB = 0
+var keyVer = sync.Map{}
 
-var keyVersion = sync.Map{}
+func checkWatch(conn redcon.Conn) bool {
+	p := conn.Context().(*LudisParams)
+	if len(p.Watch) == 0 {
+		return true
+	}
+	for key, oldVer := range p.Watch {
+		if getVer(key) != oldVer {
+			return false
+		}
+	}
+	return true
+}
+
+func snapshotWatchKeys(conn redcon.Conn, keys []string) {
+	p := conn.Context().(*LudisParams)
+	if p.Watch == nil {
+		p.Watch = make(map[string]uint64)
+	}
+	for _, k := range keys {
+		_, fullKey := dbKey(conn, k)
+		p.Watch[fullKey] = getVer(fullKey)
+	}
+}
+
+func resetTxState(conn redcon.Conn) {
+	p := conn.Context().(*LudisParams)
+	p.Queue = p.Queue[:0]
+	p.Watch = nil
+	p.Multi = false
+}
 
 func getVer(key string) uint64 {
-	v, _ := keyVersion.LoadOrStore(key, uint64(0))
+	v, _ := keyVer.LoadOrStore(key, uint64(0))
 	return v.(uint64)
 }
 
 func incrVer(key string) uint64 {
-	v, _ := keyVersion.LoadOrStore(key, uint64(0))
+	v, _ := keyVer.LoadOrStore(key, uint64(0))
 	newV := v.(uint64) + 1
-	keyVersion.Store(key, newV)
+	keyVer.Store(key, newV)
 	return newV
 }
 
@@ -96,13 +131,94 @@ func writeZSetReply(conn redcon.Conn, members []interface{}, withScores bool) {
 
 func handleRedisCommand(conn redcon.Conn, cmd redcon.Command) {
 
-	fmt.Println("start")
-	for i := range len(cmd.Args) {
-		fmt.Println("arg", string(cmd.Args[i]))
+	p := conn.Context().(*LudisParams)
+	if p.Multi {
+		switch strings.ToUpper(string(cmd.Args[0])) {
+
+		case "WATCH":
+			conn.WriteError("ERR WATCH inside MULTI is not allowed")
+
+		case "MULTI":
+			conn.WriteError("ERR MULTI calls can not be nested")
+			return
+
+		case "DISCARD":
+			p := conn.Context().(*LudisParams)
+			if !p.Multi {
+				conn.WriteError("ERR DISCARD without MULTI")
+				return
+			}
+			p.Multi = false
+			p.Queue, p.Watch = nil, nil
+			conn.WriteString("OK")
+
+		case "EXEC":
+			p := conn.Context().(*LudisParams)
+			if !p.Multi {
+				conn.WriteError("ERR EXEC without MULTI")
+				return
+			}
+			p.Multi = false
+			conn.WriteArray(len(p.Queue))
+			for _, qc := range p.Queue {
+				handleRedisCommand(conn, qc)
+			}
+			p.Queue, p.Watch = nil, nil
+
+		default:
+			// 深拷贝一份命令，避免底层切片复用
+			clone := redcon.Command{
+				Args: make([][]byte, len(cmd.Args)),
+			}
+			for i, a := range cmd.Args {
+				clone.Args[i] = append([]byte(nil), a...)
+			}
+			p.Queue = append(p.Queue, clone)
+			conn.WriteString("QUEUED")
+			return
+
+		}
+		return
 	}
-	fmt.Println("end")
 
 	switch strings.ToUpper(string(cmd.Args[0])) {
+
+	case "WATCH":
+		if p.Multi {
+			conn.WriteError("ERR WATCH inside MULTI is not allowed")
+			return
+		}
+		if len(cmd.Args) < 2 {
+			conn.WriteError("ERR wrong number of arguments for  WATCH")
+		}
+		keys := make([]string, 0, len(cmd.Args)-1)
+		for i := 1; i < len(cmd.Args); i++ {
+			_, fullKey := dbKey(conn, string(cmd.Args[i]))
+			keys = append(keys, fullKey)
+		}
+		snapshotWatchKeys(conn, keys)
+		conn.WriteString("OK")
+		return
+
+	case "UNWATCH":
+		if p.Multi {
+			conn.WriteError("ERR UNWATCH inside MULTI is not allowed")
+			return
+		}
+		p.Watch = nil
+		conn.WriteString("OK")
+		return
+
+	case "MULTI":
+		p := conn.Context().(*LudisParams)
+		if p.Multi {
+			conn.WriteError("ERR MULTI calls can not be nested")
+			return
+		}
+		p.Multi = true
+		p.Queue = p.Queue[:0]
+		conn.WriteString("OK")
+		return
 
 	case "SELECT":
 		if len(cmd.Args) != 2 {

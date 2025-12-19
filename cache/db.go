@@ -21,6 +21,7 @@ type VALUE interface {
 }
 
 type BucketCache[K KEY, V VALUE] struct {
+	txMu    sync.Mutex
 	shardN  uint64
 	buckets []*bucket[K, V]
 	hasher  Hasher[K]
@@ -253,6 +254,14 @@ type dbItem[K KEY, V VALUE] struct {
 	val     V
 	opts    *dbItemOpts
 	keyless bool
+}
+
+func (db *BucketCache[K, V]) TxBegin() {
+	db.txMu.Lock()
+}
+
+func (db *BucketCache[K, V]) TxCommit() {
+	db.txMu.Unlock()
 }
 
 func (db *BucketCache[K, V]) Set(key K, val V, opts *SetOptions) error {
